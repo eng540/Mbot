@@ -1,4 +1,5 @@
 import logging
+import time  # ✅ تم الإضافة
 import asyncio
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -73,7 +74,7 @@ if __name__ == "__main__":
     try:
         # Keep the main thread alive
         while True:
-            time.sleep(2)
+            time.sleep(2)  # ✅ الآن يعمل بدون خطأ
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
         logger.info("Scheduler shut down.")
