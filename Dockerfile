@@ -1,10 +1,11 @@
-# استخدام Debian 12 (Bookworm) بدلاً من Buster المتوقف
+# استخدام Debian 12 (Bookworm) - مدعوم حتى 2028
 FROM python:3.9-slim-bookworm
 
 WORKDIR /app
 
-# تثبيت متطلبات Playwright مع تحديث أسماء الحزم
+# تثبيت متطلبات النظام لـ Playwright وddddocr
 RUN apt-get update && apt-get install -y \
+    # متطلبات Playwright/Chromium
     libglib2.0-0 \
     libnss3 \
     libfontconfig1 \
@@ -21,22 +22,44 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     libatspi2.0-0 \
+    # متطلبات إضافية لـ ddddocr (إذا كنت تستخدم OCR للكابتشا)
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    # خطوط ودعم اللغات
     fonts-liberation \
+    fonts-dejavu \
     fontconfig \
+    wget \
+    curl \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
 # تثبيت متطلبات Python
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# تثبيت متصفحات Playwright
-RUN playwright install chromium
+# تثبيت متصفح Chromium فقط (أخف من تثبيت الكل)
+RUN playwright install chromium && \
+    playwright install-deps chromium
+
+# تنظيف Playwright cache لتقليل حجم الصورة
+RUN rm -rf ~/.cache/ms-playwright/ffmpeg* \
+    ~/.cache/ms-playwright/firefox* \
+    ~/.cache/ms-playwright/webkit*
 
 # نسخ ملفات التطبيق
 COPY . .
 
-# متغيرات البيئة (بدون تغيير)
+# إنشاء مستخدم غير root للأمان (اختياري لكن موصى به)
+RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
+USER botuser
+
+# متغيرات البيئة
 ENV HEADLESS="True"
 ENV DEBUG_MODE="False"
 ENV TARGET_URL="https://service2.diplo.de/rktermin/extern/appointment_showMonth.do?request_locale=en&locationCode=mask&realmId=354&categoryId=1638&"
@@ -60,6 +83,11 @@ ENV MIN_DELAY="1"
 ENV MAX_DELAY="3"
 ENV MAX_RETRIES="5"
 ENV RETRY_DELAY="5"
+ENV PYTHONUNBUFFERED=1
+
+# Health check للتأكد من عمل البوت
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import requests; requests.get('https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe', timeout=5)" || exit 1
 
 # تشغيل الجدولة
 CMD ["python", "main_scheduler.py"]
