@@ -2,6 +2,7 @@ import logging
 import base64
 from io import BytesIO
 from PIL import Image
+from typing import Optional  # ✅ أضفنا هذا الاستيراد
 from playwright.sync_api import Page
 
 try:
@@ -19,7 +20,8 @@ class CaptchaSolver:
             raise ImportError("ddddocr is not installed or available.")
         self.ocr = ddddocr.DdddOcr(show_ad=False)
 
-    def solve_captcha(self, page: Page, img_selector: str) -> str | None:
+    # ✅ استخدمنا Optional[str] بدلاً من str | None
+    def solve_captcha(self, page: Page, img_selector: str) -> Optional[str]:
         """Solves captcha from an image element on the page."""
         try:
             # Get the image element as a screenshot
@@ -34,7 +36,8 @@ class CaptchaSolver:
             logger.error(f"Error solving captcha: {e}")
             return None
 
-    def get_captcha_image_base64(self, page: Page, img_selector: str) -> str | None:
+    # ✅ استخدمنا Optional[str] بدلاً من str | None
+    def get_captcha_image_base64(self, page: Page, img_selector: str) -> Optional[str]:
         """Gets the captcha image as a base64 string."""
         try:
             img_element = page.locator(img_selector)
