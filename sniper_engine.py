@@ -12,11 +12,6 @@ class SniperEngine:
         self.config = Config()
         self.captcha_solver = CaptchaSolver()
 
-
-        self.config = Config()
-
-        self.captcha_solver = CaptchaSolver()
-
     def _human_like_delay(self):
         time.sleep(random.uniform(self.config.MIN_DELAY, self.config.MAX_DELAY))
 
@@ -35,8 +30,8 @@ class SniperEngine:
                 else:
                     logger.warning(f"Captcha solution '{captcha_text}' was incorrect. Retrying...")
                     # Reload captcha image if possible
-                    if page.locator("input[id*=\"refreshcaptcha\"]").is_visible():
-                        page.click("input[id*=\"refreshcaptcha\"]")
+                    if page.locator('input[id*="refreshcaptcha"]').is_visible():
+                        page.click('input[id*="refreshcaptcha"]')
                         self._human_like_delay()
             else:
                 logger.error("Failed to get captcha text. Retrying...")
@@ -64,9 +59,9 @@ class SniperEngine:
                 # --- Step 1: Solve initial captcha ---
                 if not self._solve_and_submit_captcha(
                     page, 
-                    "img[src*=\"captcha\"]", 
-                    "input[id*=\"captchaText\"]", 
-                    "input[id*=\"appointment_showMonth\"]"
+                    'img[src*="captcha"]', 
+                    'input[id*="captchaText"]', 
+                    'input[id*="appointment_showMonth"]'
                 ):
                     return False
 
@@ -76,55 +71,58 @@ class SniperEngine:
                     # Navigate to next month if needed (simplified for now, full logic in main scheduler)
                     # For this initial run, we just check the current view
                     return False
-                
+
                 logger.info("Appointments might be available. Proceeding to select.")
 
                 # --- Step 3: Select an available day and time ---
                 # This part needs to be dynamic based on actual available dates
                 # For demonstration, let's assume we click the first available day if any
-                available_days = page.locator("td.calendarDay.available a").all()
+                available_days = page.locator('td.calendarDay.available a').all()
                 if not available_days:
                     logger.info("No available days found in the current month.")
                     return False
-                
+
                 available_days[0].click() # Click the first available day
                 self._human_like_delay()
 
                 # --- Step 4: Select an available time slot ---
-                available_times = page.locator("input[name=\"appointment"][type=\"radio\"]").all()
+                available_times = page.locator('input[name="appointment"][type="radio"]').all()
                 if not available_times:
                     logger.info("No available time slots found for the selected day.")
                     return False
-                
+
                 available_times[0].click() # Click the first available time slot
                 self._human_like_delay()
-                page.click("input[type=\"submit\"][value=\"Continue\"]") # Click continue after selecting time
+                page.click('input[type="submit"][value="Continue"]') # Click continue after selecting time
                 self._human_like_delay()
 
                 # --- Step 5: Fill the form and select purpose ---
                 logger.info("Filling appointment form...")
-                page.fill("input[name=\"lastname\"]", self.config.LAST_NAME)
-                page.fill("input[name=\"firstname\"]", self.config.FIRST_NAME)
-                page.fill("input[name=\"email\"]", self.config.EMAIL)
-                page.fill("input[name=\"emailrepeat\"]", self.config.EMAIL)
-                page.fill("input[name=\"fields[0].content\"]", self.config.PASSPORT)
-                page.fill("input[name=\"fields[1].content\"]", self.config.PHONE)
+                page.fill('input[name="lastname"]', self.config.LAST_NAME)
+                page.fill('input[name="firstname"]', self.config.FIRST_NAME)
+                page.fill('input[name="email"]', self.config.EMAIL)
+                page.fill('input[name="emailrepeat"]', self.config.EMAIL)
+                page.fill('input[name="fields[0].content"]', self.config.PASSPORT)
+                page.fill('input[name="fields[1].content"]', self.config.PHONE)
                 self._human_like_delay()
 
                 # Crucial: Select purpose using JavaScript to ensure session state update
                 purpose_value = self.config.PURPOSE
                 js_script = f"""
-                    var selectElement = document.querySelector('select[name=\"fields[2].content\"]');
-                    if (selectElement) {
+                    var selectElement = document.querySelector('select[name="fields[2].content"]');
+                    if (selectElement) {{
                         var options = Array.from(selectElement.options);
                         var targetOption = options.find(option => option.text.includes('{purpose_value}'));
-                        if (targetOption) {
+                        if (targetOption) {{
                             selectElement.value = targetOption.value;
                             selectElement.dispatchEvent(new Event('change', {{ bubbles: true }}));
                             console.log('Purpose selected via JS: {purpose_value}');
-                        }} else {{ console.log('Purpose select element not found or option not found.'); }}
-                """.format(purpose_value=purpose_value)
-                
+                        }} else {{ 
+                            console.log('Purpose select element not found or option not found.'); 
+                        }}
+                    }}
+                """
+
                 page.evaluate(js_script)
                 logger.info(f"Purpose '{purpose_value}' selected via JavaScript.")
                 self._human_like_delay()
@@ -132,9 +130,9 @@ class SniperEngine:
                 # --- Step 6: Solve final captcha and submit ---
                 if not self._solve_and_submit_captcha(
                     page, 
-                    "img[src*=\"captcha\"]", 
-                    "input[id*=\"captchaText\"]", 
-                    "input[type=\"submit\"][value=\"Submit\"]"
+                    'img[src*="captcha"]', 
+                    'input[id*="captchaText"]', 
+                    'input[type="submit"][value="Submit"]'
                 ):
                     return False
 
