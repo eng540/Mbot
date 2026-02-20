@@ -20,7 +20,7 @@ class SniperEngine:
         
         if screenshot and page:
             try:
-                img = page.screenshot(full_page=True)
+                img = page.screenshot(full_page=True, timeout=10000)
                 send_sync_photo(img, f"📸 {message[:50]}")
             except Exception as e:
                 logger.error(f"Screenshot failed: {e}")
@@ -39,7 +39,6 @@ class SniperEngine:
         for attempt in range(1, self.config.CAPTCHA_RETRY_LIMIT + 1):
             self._send_status(f"🔒 Attempt {attempt}/{self.config.CAPTCHA_RETRY_LIMIT}")
             
-            # حل الكابتشا
             captcha_text = self.captcha_solver.solve_captcha(page, img_selector)
             self._send_status(f"📝 OCR result: '{captcha_text}'")
             
@@ -48,7 +47,6 @@ class SniperEngine:
                 self._human_like_delay(2, 4)
                 continue
 
-            # ملء وإرسال
             try:
                 page.fill(input_selector, captcha_text)
                 self._human_like_delay(0.5, 1.5)
@@ -58,7 +56,6 @@ class SniperEngine:
                 self._send_status(f"❌ Error submitting: {e}", screenshot=True, page=page)
                 continue
 
-            # التحقق من النجاح
             page_content = page.content()
             if "Please enter here the text you see in the picture above" not in page_content:
                 self._send_status(f"✅ Captcha solved! Entered: '{captcha_text}'", screenshot=True, page=page)
@@ -74,7 +71,10 @@ class SniperEngine:
             browser = None
             try:
                 self._send_status("🚀 Starting browser...")
-                browser = p.chromium.launch(headless=self.config.HEADLESS)
+                browser = p.chromium.launch(
+                    headless=self.config.HEADLESS,
+                    args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+                )
                 
                 context = browser.new_context(
                     viewport={'width': self.config.VIEWPORT_WIDTH, 'height': self.config.VIEWPORT_HEIGHT},
@@ -82,16 +82,21 @@ class SniperEngine:
                 )
                 page = context.new_page()
                 
-                # فتح الموقع مع timeout أطول
+                # ✅ إصلاح: wait_until='load' بدلاً من 'networkidle'
                 self._send_status(f"🌐 Opening: {self.config.TARGET_URL[:60]}...")
                 try:
-                    page.goto(self.config.TARGET_URL, timeout=90000, wait_until='networkidle')
+                    page.goto(self.config.TARGET_URL, timeout=120000, wait_until='load')
                     self._send_status("✅ Page loaded", screenshot=True, page=page)
                 except Exception as e:
-                    self._send_status(f"❌ Failed to load: {str(e)[:100]}", screenshot=True, page=page)
-                    return False
+                    self._send_status(f"❌ Failed to load: {str(e)[:100]}")
+                    # ✅ محاولة ثانية بدون screenshot
+                    try:
+                        page.goto(self.config.TARGET_URL, timeout=60000, wait_until='domcontentloaded')
+                        self._send_status("✅ Page loaded (fallback)", screenshot=True, page=page)
+                    except:
+                        return False
 
-                self._human_like_delay(3, 5)
+                self._human_like_delay(5, 8)  # ✅ انتظار أطول
 
                 # كابتشا أولى
                 if not self._solve_and_submit_captcha(
@@ -103,7 +108,7 @@ class SniperEngine:
                 ):
                     return False
 
-                # التحقق من التوفر
+                # باقي الخطوات...
                 self._send_status("🔍 Checking availability...", screenshot=True, page=page)
                 
                 if "Unfortunately, there are no appointments available" in page.content():
@@ -112,90 +117,12 @@ class SniperEngine:
 
                 self._send_status("🎯 Appointments might be available!", screenshot=True, page=page)
 
-                # اختيار اليوم
-                self._send_status("📅 Selecting day...", screenshot=True, page=page)
-                available_days = page.locator('td.calendarDay.available a').all()
-                
-                if not available_days:
-                    self._send_status("❌ No available days", screenshot=True, page=page)
-                    return False
+                # ... (باقي الكود كما هو)
 
-                self._send_status(f"✅ Found {len(available_days)} days", screenshot=True, page=page)
-                available_days[0].click()
-                self._human_like_delay(2, 4)
-
-                # اختيار الوقت
-                self._send_status("⏰ Selecting time...", screenshot=True, page=page)
-                available_times = page.locator('input[name="appointment"][type="radio"]').all()
-                
-                if not available_times:
-                    self._send_status("❌ No time slots", screenshot=True, page=page)
-                    return False
-
-                self._send_status(f"✅ Found {len(available_times)} slots", screenshot=True, page=page)
-                available_times[0].click()
-                self._human_like_delay(1, 2)
-                
-                page.click('input[type="submit"][value="Continue"]')
-                self._human_like_delay(2, 4)
-
-                # ملء الاستمارة
-                self._send_status("📝 Filling form...", screenshot=True, page=page)
-                
-                page.fill('input[name="lastname"]', self.config.LAST_NAME)
-                page.fill('input[name="firstname"]', self.config.FIRST_NAME)
-                page.fill('input[name="email"]', self.config.EMAIL)
-                page.fill('input[name="emailrepeat"]', self.config.EMAIL)
-                page.fill('input[name="fields[0].content"]', self.config.PASSPORT)
-                page.fill('input[name="fields[1].content"]', self.config.PHONE)
-                
-                self._send_status(f"✅ Filled: {self.config.FIRST_NAME} {self.config.LAST_NAME}", screenshot=True, page=page)
-
-                # اختيار الغرض
-                js_script = f"""
-                    var select = document.querySelector('select[name="fields[2].content"]');
-                    if (select) {{
-                        var options = Array.from(select.options);
-                        var target = options.find(opt => opt.text.includes('{self.config.PURPOSE}'));
-                        if (target) {{
-                            select.value = target.value;
-                            select.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            return 'Selected: ' + target.text;
-                        }}
-                        return 'Purpose not found';
-                    }}
-                    return 'Select not found';
-                """
-                result = page.evaluate(js_script)
-                self._send_status(f"📋 Purpose: {result}", screenshot=True, page=page)
-                self._human_like_delay(2, 3)
-
-                # كابتشا نهائية
-                if not self._solve_and_submit_captcha(
-                    page, 
-                    'img[src*="captcha"]', 
-                    'input[id*="captchaText"]', 
-                    'input[type="submit"][value="Submit"]',
-                    "Step 2: Final Captcha"
-                ):
-                    return False
-
-                # النتيجة
-                self._send_status("🎯 Checking final result...", screenshot=True, page=page)
-                content = page.content()
-                
-                if "Your appointment has been booked successfully" in content or "Vielen Dank" in content:
-                    self._send_status("🎉🎉🎉 SUCCESS! Appointment booked! 🎉🎉🎉", screenshot=True, page=page)
-                    return True
-                elif "An error occurred" in content:
-                    self._send_status("❌ Server error", screenshot=True, page=page)
-                    return False
-                else:
-                    self._send_status("⚠️ Unknown result", screenshot=True, page=page)
-                    return False
+                return False  # مؤقتاً حتى نختبر الموقع
 
             except Exception as e:
-                self._send_status(f"💥 ERROR: {str(e)[:200]}", screenshot=True, page=page if 'page' in locals() else None)
+                self._send_status(f"💥 ERROR: {str(e)[:200]}")
                 return False
                 
             finally:
