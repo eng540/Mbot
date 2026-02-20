@@ -1,6 +1,6 @@
 playwright
 ddddocr
 python-telegram-bot==13.15
-APScheduler
+APScheduler==3.9.1  # ✅ إصدار أقدم وأستقر
 pytz
 Pillow
