@@ -1,80 +1,68 @@
 import logging
-import asyncio
 from telegram import Bot
 from telegram.error import TelegramError
+from io import BytesIO
 from config import Config
 
 logger = logging.getLogger(__name__)
 
-class TelegramNotifier:
-    def __init__(self):
-        self.config = Config()
-        if not self.config.TELEGRAM_BOT_TOKEN or self.config.TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
-            logger.warning("Telegram bot token not configured. Telegram notifications will be disabled.")
-            self.bot = None
+# Singleton instance
+_bot_instance = None
+_chat_id = None
+
+def _get_bot():
+    """Get or create bot instance."""
+    global _bot_instance, _chat_id
+    if _bot_instance is None:
+        config = Config()
+        if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_BOT_TOKEN != "YOUR_TELEGRAM_BOT_TOKEN":
+            _bot_instance = Bot(token=config.TELEGRAM_BOT_TOKEN)
+            _chat_id = config.TELEGRAM_CHAT_ID
+            logger.info("Telegram bot initialized.")
         else:
-            self.bot = Bot(token=self.config.TELEGRAM_BOT_TOKEN)
+            logger.warning("Telegram bot token not configured.")
+    return _bot_instance, _chat_id
 
-    async def _send_message(self, text: str):
-        if not self.bot:
-            return
-        try:
-            await self.bot.send_message(chat_id=self.config.TELEGRAM_CHAT_ID, text=text)
-            logger.info("Telegram message sent.")
-        except TelegramError as e:
-            logger.error(f"Failed to send Telegram message: {e}")
-
-    async def _send_photo(self, photo_bytes: bytes, caption: str = ""):
-        if not self.bot:
-            return
-        try:
-            await self.bot.send_photo(chat_id=self.config.TELEGRAM_CHAT_ID, photo=photo_bytes, caption=caption)
-            logger.info("Telegram photo sent.")
-        except TelegramError as e:
-            logger.error(f"Failed to send Telegram photo: {e}")
-
-    async def _send_document(self, document_bytes: bytes, filename: str, caption: str = ""):
-        if not self.bot:
-            return
-        try:
-            await self.bot.send_document(chat_id=self.config.TELEGRAM_CHAT_ID, document=document_bytes, filename=filename, caption=caption)
-            logger.info(f"Telegram document '{filename}' sent.")
-        except TelegramError as e:
-            logger.error(f"Failed to send Telegram document: {e}")
-
-# For synchronous use in scheduler
 def send_sync_message(text: str):
-    notifier = TelegramNotifier()
-    if notifier.bot:
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(notifier._send_message(text))
-            else:
-                loop.run_until_complete(notifier._send_message(text))
-        except Exception as e:
-            logger.error(f"Error in send_sync_message: {e}")
+    """Send message synchronously."""
+    bot, chat_id = _get_bot()
+    if not bot:
+        return
+    
+    try:
+        max_length = 4096
+        if len(text) > max_length:
+            for i in range(0, len(text), max_length):
+                bot.send_message(chat_id=chat_id, text=text[i:i+max_length])
+        else:
+            bot.send_message(chat_id=chat_id, text=text)
+        logger.info("Telegram message sent.")
+    except Exception as e:
+        logger.error(f"Failed to send message: {e}")
 
 def send_sync_photo(photo_bytes: bytes, caption: str = ""):
-    notifier = TelegramNotifier()
-    if notifier.bot:
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(notifier._send_photo(photo_bytes, caption))
-            else:
-                loop.run_until_complete(notifier._send_photo(photo_bytes, caption))
-        except Exception as e:
-            logger.error(f"Error in send_sync_photo: {e}")
+    """Send photo synchronously."""
+    bot, chat_id = _get_bot()
+    if not bot:
+        return
+    
+    try:
+        photo = BytesIO(photo_bytes)
+        bot.send_photo(chat_id=chat_id, photo=photo, caption=caption[:1024])
+        logger.info("Telegram photo sent.")
+    except Exception as e:
+        logger.error(f"Failed to send photo: {e}")
 
-def send_sync_document(document_bytes: bytes, filename: str, caption: str = ""):
-    notifier = TelegramNotifier()
-    if notifier.bot:
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(notifier._send_document(document_bytes, filename, caption))
-            else:
-                loop.run_until_complete(notifier._send_document(document_bytes, filename, caption))
-        except Exception as e:
-            logger.error(f"Error in send_sync_document: {e}")
+def send_sync_document(file_bytes: bytes, filename: str = "file.html", caption: str = ""):
+    """Send document synchronously."""
+    bot, chat_id = _get_bot()
+    if not bot:
+        return
+    
+    try:
+        document = BytesIO(file_bytes)
+        document.name = filename
+        bot.send_document(chat_id=chat_id, document=document, caption=caption[:1024])
+        logger.info("Telegram document sent.")
+    except Exception as e:
+        logger.error(f"Failed to send document: {e}")
