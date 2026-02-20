@@ -1,7 +1,7 @@
 import time
 import random
 import logging
-from playwright.sync_api import sync_playwright, Page, expect
+from playwright.sync_api import sync_playwright, Page
 from config import Config
 from captcha_solver import CaptchaSolver
 from telegram_bot import send_sync_message, send_sync_photo, send_sync_document
@@ -13,194 +13,197 @@ class SniperEngine:
         self.config = Config()
         self.captcha_solver = CaptchaSolver()
 
-    def _human_like_delay(self):
-        time.sleep(random.uniform(self.config.MIN_DELAY, self.config.MAX_DELAY))
-
-    def _safe_send_document(self, content, filename, caption):
-        """Helper to send documents safely to Telegram without crashing the engine."""
-        try:
-            if isinstance(content, str):
-                content = content.encode('utf-8')
-            send_sync_document(content, filename, caption)
-        except Exception as e:
-            logger.error(f"Failed to send document {filename} to Telegram: {e}")
-
-    def _solve_and_submit_captcha(self, page: Page, img_selector: str, input_selector: str, submit_selector: str) -> bool:
-        for attempt in range(self.config.CAPTCHA_RETRY_LIMIT):
+    def _send_status(self, message: str, screenshot: bool = False, page: Page = None):
+        """إرسال حالة إلى Telegram"""
+        logger.info(message)
+        send_sync_message(f"🤖 {message}")
+        
+        if screenshot and page:
             try:
-                logger.info(f"🔒 Attempt {attempt + 1}")
-                send_sync_message(f"🔒 Attempt {attempt + 1}")
-                
-                # Wait for the captcha image to be visible
-                captcha_img_locator = page.locator(img_selector)
-                # Ensure the element is visible before trying to take a screenshot
-                captcha_img_locator.wait_for(state="visible", timeout=self.config.CAPTCHA_SOLVER_TIMEOUT * 1000)
-                
-                captcha_text = self.captcha_solver.solve_captcha(page, img_selector)
-                logger.info(f"📝 OCR: '{captcha_text}'")
-                
-                if captcha_text:
-                    page.fill(input_selector, captcha_text)
-                    self._human_like_delay()
-                    page.click(submit_selector)
-                    self._human_like_delay()
-                    
-                    # Check if captcha was solved successfully
-                    # If the captcha input field is still visible, it means it failed
-                    if page.locator(input_selector).is_visible():
-                        logger.warning(f"Captcha solution '{captcha_text}' was incorrect. Retrying...")
-                        send_sync_message(f"⚠️ Captcha incorrect. Retrying...")
-                        # Reload captcha image if possible
-                        refresh_btn = page.locator("input[id*=\"refreshcaptcha\"]")
-                        if refresh_btn.is_visible():
-                            refresh_btn.click()
-                            self._human_like_delay()
-                    else:
-                        logger.info(f"Captcha solved successfully on attempt {attempt + 1}.")
-                        return True
-                else:
-                    logger.error("❌ OCR failed")
-                    send_sync_message("❌ OCR failed")
+                img = page.screenshot(full_page=True)
+                send_sync_photo(img, f"📸 {message[:50]}")
             except Exception as e:
-                logger.error(f"Error during captcha solving attempt {attempt + 1}: {e}")
-                send_sync_message(f"❌ Error during captcha solving: {e}")
-                # Save HTML on failure for debugging
-                self._safe_send_document(page.content(), f"captcha_error_attempt_{attempt+1}.html", f"Captcha Error Details")
-            self._human_like_delay()
-        logger.error("Failed to solve captcha after multiple attempts.")
+                logger.error(f"Screenshot failed: {e}")
+
+    def _human_like_delay(self, min_d=None, max_d=None):
+        min_delay = min_d or self.config.MIN_DELAY
+        max_delay = max_d or self.config.MAX_DELAY
+        delay = random.uniform(min_delay, max_delay)
+        time.sleep(delay)
+        return delay
+
+    def _solve_and_submit_captcha(self, page: Page, img_selector: str, input_selector: str, submit_selector: str, step_name: str) -> bool:
+        """حل الكابتشا مع إشعارات Telegram"""
+        self._send_status(f"🔒 {step_name}: Starting captcha solve", screenshot=True, page=page)
+        
+        for attempt in range(1, self.config.CAPTCHA_RETRY_LIMIT + 1):
+            self._send_status(f"🔒 Attempt {attempt}/{self.config.CAPTCHA_RETRY_LIMIT}")
+            
+            # حل الكابتشا
+            captcha_text = self.captcha_solver.solve_captcha(page, img_selector)
+            self._send_status(f"📝 OCR result: '{captcha_text}'")
+            
+            if not captcha_text:
+                self._send_status("❌ OCR failed", screenshot=True, page=page)
+                self._human_like_delay(2, 4)
+                continue
+
+            # ملء وإرسال
+            try:
+                page.fill(input_selector, captcha_text)
+                self._human_like_delay(0.5, 1.5)
+                page.click(submit_selector)
+                self._human_like_delay(2, 4)
+            except Exception as e:
+                self._send_status(f"❌ Error submitting: {e}", screenshot=True, page=page)
+                continue
+
+            # التحقق من النجاح
+            page_content = page.content()
+            if "Please enter here the text you see in the picture above" not in page_content:
+                self._send_status(f"✅ Captcha solved! Entered: '{captcha_text}'", screenshot=True, page=page)
+                return True
+            else:
+                self._send_status(f"❌ Wrong captcha: '{captcha_text}', retrying...", screenshot=True, page=page)
+
+        self._send_status("🚨 All captcha attempts failed", screenshot=True, page=page)
         return False
 
     def run(self) -> bool:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=self.config.HEADLESS)
-            context = browser.new_context(
-                viewport={'width': self.config.VIEWPORT_WIDTH, 'height': self.config.VIEWPORT_HEIGHT},
-                user_agent=self.config.USER_AGENT
-            )
-            page = context.new_page()
-
+            browser = None
             try:
-                logger.info(f"🚀 Starting browser...")
-                logger.info(f"🌐 Opening: {self.config.TARGET_URL}")
-                send_sync_message(f"🌐 Opening: {self.config.TARGET_URL}")
+                self._send_status("🚀 Starting browser...")
+                browser = p.chromium.launch(headless=self.config.HEADLESS)
                 
-                page.goto(self.config.TARGET_URL, wait_until="networkidle", timeout=60000)
-                logger.info("✅ Page loaded")
-                send_sync_message("✅ Page loaded")
+                context = browser.new_context(
+                    viewport={'width': self.config.VIEWPORT_WIDTH, 'height': self.config.VIEWPORT_HEIGHT},
+                    user_agent=self.config.USER_AGENT
+                )
+                page = context.new_page()
                 
-                # Take a screenshot for initial verification
-                send_sync_photo(page.screenshot(), caption="Initial Page Load")
+                # فتح الموقع مع timeout أطول
+                self._send_status(f"🌐 Opening: {self.config.TARGET_URL[:60]}...")
+                try:
+                    page.goto(self.config.TARGET_URL, timeout=90000, wait_until='networkidle')
+                    self._send_status("✅ Page loaded", screenshot=True, page=page)
+                except Exception as e:
+                    self._send_status(f"❌ Failed to load: {str(e)[:100]}", screenshot=True, page=page)
+                    return False
 
-                # --- Step 1: Solve initial captcha ---
-                logger.info("🔒 Step 1: Initial Captcha: Starting")
-                send_sync_message("🔒 Step 1: Initial Captcha: Starting")
+                self._human_like_delay(3, 5)
+
+                # كابتشا أولى
                 if not self._solve_and_submit_captcha(
                     page, 
-                    "img[src*=\"captcha\"]", 
-                    "input[id*=\"captchaText\"]", 
-                    "input[id*=\"appointment_showMonth\"]"
+                    'img[src*="captcha"]', 
+                    'input[id*="captchaText"]', 
+                    'input[id*="appointment_showMonth"]',
+                    "Step 1: Initial Captcha"
                 ):
                     return False
 
-                # --- Step 2: Check for available appointments ---
-                page.wait_for_load_state("networkidle")
-                self._human_like_delay()
-
-                if "Unfortunately, there are no appointments available at this time" in page.content():
-                    logger.info("❌ No appointments available this month.")
-                    send_sync_message("❌ No appointments available this month.")
-                    return False
+                # التحقق من التوفر
+                self._send_status("🔍 Checking availability...", screenshot=True, page=page)
                 
-                logger.info("✅ Appointments might be available!")
-                send_sync_message("✅ Appointments might be available! Proceeding...")
-                send_sync_photo(page.screenshot(), caption="Available Appointments View")
+                if "Unfortunately, there are no appointments available" in page.content():
+                    self._send_status("📭 No appointments available", screenshot=True, page=page)
+                    return False
 
-                # --- Step 3: Select an available day ---
-                available_days = page.locator("td.calendarDay.available a").all()
+                self._send_status("🎯 Appointments might be available!", screenshot=True, page=page)
+
+                # اختيار اليوم
+                self._send_status("📅 Selecting day...", screenshot=True, page=page)
+                available_days = page.locator('td.calendarDay.available a').all()
+                
                 if not available_days:
-                    logger.info("❌ No available days found.")
-                    send_sync_message("❌ No available days found.")
+                    self._send_status("❌ No available days", screenshot=True, page=page)
                     return False
-                
+
+                self._send_status(f"✅ Found {len(available_days)} days", screenshot=True, page=page)
                 available_days[0].click()
-                self._human_like_delay()
-                page.wait_for_load_state("networkidle")
+                self._human_like_delay(2, 4)
 
-                # --- Step 4: Select an available time slot ---
-                available_times = page.locator("input[name=\"appointment\"][type=\"radio\"]").all()
+                # اختيار الوقت
+                self._send_status("⏰ Selecting time...", screenshot=True, page=page)
+                available_times = page.locator('input[name="appointment"][type="radio"]').all()
+                
                 if not available_times:
-                    logger.info("❌ No time slots found.")
-                    send_sync_message("❌ No time slots found.")
+                    self._send_status("❌ No time slots", screenshot=True, page=page)
                     return False
-                
-                available_times[0].click()
-                self._human_like_delay()
-                page.click("input[type=\"submit\"][value=\"Continue\"]")
-                self._human_like_delay()
-                page.wait_for_load_state("networkidle")
 
-                # --- Step 5: Fill the form ---
-                logger.info("📝 Filling appointment form...")
-                send_sync_message("📝 Filling appointment form...")
+                self._send_status(f"✅ Found {len(available_times)} slots", screenshot=True, page=page)
+                available_times[0].click()
+                self._human_like_delay(1, 2)
                 
-                page.fill("input[name=\"lastname\"]", self.config.LAST_NAME)
-                page.fill("input[name=\"firstname\"]", self.config.FIRST_NAME)
-                page.fill("input[name=\"email\"]", self.config.EMAIL)
-                page.fill("input[name=\"emailrepeat\"]", self.config.EMAIL)
-                page.fill("input[name=\"fields[0].content\"]", self.config.PASSPORT)
-                page.fill("input[name=\"fields[1].content\"]", self.config.PHONE)
+                page.click('input[type="submit"][value="Continue"]')
+                self._human_like_delay(2, 4)
+
+                # ملء الاستمارة
+                self._send_status("📝 Filling form...", screenshot=True, page=page)
                 
-                # Purpose Selection via JS
-                purpose_value = self.config.PURPOSE
-                page.evaluate(f"""
-                    var select = document.querySelector(\'select[name="fields[2].content"]\');
+                page.fill('input[name="lastname"]', self.config.LAST_NAME)
+                page.fill('input[name="firstname"]', self.config.FIRST_NAME)
+                page.fill('input[name="email"]', self.config.EMAIL)
+                page.fill('input[name="emailrepeat"]', self.config.EMAIL)
+                page.fill('input[name="fields[0].content"]', self.config.PASSPORT)
+                page.fill('input[name="fields[1].content"]', self.config.PHONE)
+                
+                self._send_status(f"✅ Filled: {self.config.FIRST_NAME} {self.config.LAST_NAME}", screenshot=True, page=page)
+
+                # اختيار الغرض
+                js_script = f"""
+                    var select = document.querySelector('select[name="fields[2].content"]');
                     if (select) {{
                         var options = Array.from(select.options);
-                        var target = options.find(o => o.text.includes(\'{purpose_value}\'));
+                        var target = options.find(opt => opt.text.includes('{self.config.PURPOSE}'));
                         if (target) {{
                             select.value = target.value;
-                            select.dispatchEvent(new Event(\'change\', {{ bubbles: true }}));
+                            select.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return 'Selected: ' + target.text;
                         }}
+                        return 'Purpose not found';
                     }}
-                """)
-                self._human_like_delay()
+                    return 'Select not found';
+                """
+                result = page.evaluate(js_script)
+                self._send_status(f"📋 Purpose: {result}", screenshot=True, page=page)
+                self._human_like_delay(2, 3)
 
-                # --- Step 6: Final Captcha and Submit ---
-                logger.info("🔒 Step 6: Final Captcha: Starting")
-                send_sync_message("🔒 Step 6: Final Captcha: Starting")
+                # كابتشا نهائية
                 if not self._solve_and_submit_captcha(
                     page, 
-                    "img[src*=\"captcha\"]", 
-                    "input[id*=\"captchaText\"]", 
-                    "input[type=\"submit\"][value=\"Submit\"]"
+                    'img[src*="captcha"]', 
+                    'input[id*="captchaText"]', 
+                    'input[type="submit"][value="Submit"]',
+                    "Step 2: Final Captcha"
                 ):
                     return False
-                
-                page.wait_for_load_state("networkidle")
-                self._human_like_delay()
 
-                # --- Step 7: Check Success ---
-                if "Your appointment has been booked successfully" in page.content() or "Vielen Dank" in page.content():
-                    logger.info("🎉 SUCCESS! Appointment booked.")
-                    send_sync_message("🎉 SUCCESS! Appointment booked.")
-                    send_sync_photo(page.screenshot(), caption="Booking Success Confirmation")
+                # النتيجة
+                self._send_status("🎯 Checking final result...", screenshot=True, page=page)
+                content = page.content()
+                
+                if "Your appointment has been booked successfully" in content or "Vielen Dank" in content:
+                    self._send_status("🎉🎉🎉 SUCCESS! Appointment booked! 🎉🎉🎉", screenshot=True, page=page)
                     return True
+                elif "An error occurred" in content:
+                    self._send_status("❌ Server error", screenshot=True, page=page)
+                    return False
                 else:
-                    logger.error("❌ Booking failed at final step.")
-                    send_sync_message("❌ Booking failed at final step.")
-                    self._safe_send_document(page.content(), "booking_failed.html", "Final Failure Details")
+                    self._send_status("⚠️ Unknown result", screenshot=True, page=page)
                     return False
 
             except Exception as e:
-                logger.error(f"❌ Critical Error: {e}")
-                send_sync_message(f"❌ Critical Error: {e}")
-                try:
-                    send_sync_photo(page.screenshot(), caption="Critical Error Screenshot")
-                except: pass
+                self._send_status(f"💥 ERROR: {str(e)[:200]}", screenshot=True, page=page if 'page' in locals() else None)
                 return False
+                
             finally:
-                browser.close()
+                if browser:
+                    browser.close()
+                    self._send_status("🔒 Browser closed")
 
 if __name__ == "__main__":
     sniper = SniperEngine()
-    sniper.run()
+    result = sniper.run()
+    print(f"Result: {'SUCCESS' if result else 'FAILED'}")
