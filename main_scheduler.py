@@ -35,13 +35,14 @@ def check_and_book(embassy_name: str):
         send_sync_message(message)
 
 if __name__ == "__main__":
-    scheduler = BackgroundScheduler()
+    # ✅ إصلاح: استخدام timezone=None
+    scheduler = BackgroundScheduler(timezone=None)
     
     # ✅ تشغيل فوري عند الإقلاع
     logger.info("🚀 Running immediate check on startup...")
     check_and_book("Muscat")
     
-    # ✅ التجدولة كل ساعة
+    # ✅ التجدولة
     scheduler.add_job(
         check_and_book,
         CronTrigger.from_crontab(Config.REGULAR_CHECK_CRON),
