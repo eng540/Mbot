@@ -1,16 +1,14 @@
 import logging
 import base64
+from typing import Optional
 from io import BytesIO
-from PIL import Image
-from typing import Optional  # ✅ أضفنا هذا الاستيراد
-from playwright.sync_api import Page
 
 try:
     import ddddocr
     DDDDOCR_AVAILABLE = True
 except ImportError:
     DDDDOCR_AVAILABLE = False
-    logging.warning("ddddocr not available - captcha solving disabled")
+    logging.warning("ddddocr not available")
 
 logger = logging.getLogger(__name__)
 
@@ -18,27 +16,45 @@ class CaptchaSolver:
     def __init__(self):
         if not DDDDOCR_AVAILABLE:
             raise ImportError("ddddocr is not installed or available.")
-        self.ocr = ddddocr.DdddOcr(show_ad=False)
+        # ✅ إنشاء OCR مرة واحدة فقط
+        self.ocr = ddddocr.DdddOcr(show_ad=False, beta=True)
+        logger.info("CaptchaSolver initialized")
 
-    # ✅ استخدمنا Optional[str] بدلاً من str | None
-    def solve_captcha(self, page: Page, img_selector: str) -> Optional[str]:
-        """Solves captcha from an image element on the page."""
+    def solve_captcha(self, page, img_selector: str) -> Optional[str]:
+        """حل الكابتشا مع معالجة الأخطاء"""
         try:
-            # Get the image element as a screenshot
+            logger.info(f"Looking for captcha with selector: {img_selector}")
+            
+            # ✅ التحقق من وجود العنصر أولاً
+            if not page.locator(img_selector).count():
+                logger.error("Captcha element not found")
+                return None
+            
+            # ✅ انتظار ظهور العنصر
+            page.locator(img_selector).wait_for(state='visible', timeout=10000)
+            logger.info("Captcha element visible")
+            
+            # ✅ التقاط الصورة
             img_element = page.locator(img_selector)
-            img_bytes = img_element.screenshot()
-
-            # Use ddddocr to solve the captcha
+            img_bytes = img_element.screenshot(timeout=10000)
+            logger.info(f"Captcha screenshot taken: {len(img_bytes)} bytes")
+            
+            # ✅ حل الكابتشا
             result = self.ocr.classification(img_bytes)
-            logger.info(f"Captcha solved: {result}")
-            return result
+            logger.info(f"OCR result: '{result}'")
+            
+            if result and len(result) >= 3:  # ✅ التحقق من طول النتيجة
+                return result
+            else:
+                logger.warning(f"OCR result too short or empty: '{result}'")
+                return None
+                
         except Exception as e:
-            logger.error(f"Error solving captcha: {e}")
+            logger.error(f"Error in solve_captcha: {e}")
             return None
 
-    # ✅ استخدمنا Optional[str] بدلاً من str | None
-    def get_captcha_image_base64(self, page: Page, img_selector: str) -> Optional[str]:
-        """Gets the captcha image as a base64 string."""
+    def get_captcha_image_base64(self, page, img_selector: str) -> Optional[str]:
+        """الحصول على صورة الكابتشا كـ base64"""
         try:
             img_element = page.locator(img_selector)
             img_bytes = img_element.screenshot()
