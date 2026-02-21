@@ -4,7 +4,7 @@ import logging
 from playwright.sync_api import sync_playwright, Page
 from config import Config
 from captcha_solver import CaptchaSolver
-from telegram_bot import send_sync_message, send_sync_photo, send_sync_document
+from telegram_bot import send_sync_message, send_sync_photo
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,6 @@ class SniperEngine:
         self.captcha_solver = CaptchaSolver()
 
     def _send_status(self, message: str, screenshot: bool = False, page: Page = None):
-        """إرسال حالة إلى Telegram"""
         logger.info(message)
         send_sync_message(f"🤖 {message}")
         
@@ -33,37 +32,68 @@ class SniperEngine:
         return delay
 
     def _solve_and_submit_captcha(self, page: Page, img_selector: str, input_selector: str, submit_selector: str, step_name: str) -> bool:
-        """حل الكابتشا مع إشعارات Telegram"""
-        self._send_status(f"🔒 {step_name}: Starting captcha solve", screenshot=True, page=page)
+        """حل الكابتشا وإرسالها"""
+        self._send_status(f"🔒 {step_name}: Starting", screenshot=True, page=page)
         
         for attempt in range(1, self.config.CAPTCHA_RETRY_LIMIT + 1):
             self._send_status(f"🔒 Attempt {attempt}/{self.config.CAPTCHA_RETRY_LIMIT}")
             
-            captcha_text = self.captcha_solver.solve_captcha(page, img_selector)
+            # ✅ حل الكابتشا (بشكل متزامن - لا async)
+            try:
+                captcha_text = self.captcha_solver.solve_captcha(page, img_selector)
+            except Exception as e:
+                logger.error(f"Captcha solver crashed: {e}")
+                captcha_text = None
+            
             self._send_status(f"📝 OCR result: '{captcha_text}'")
             
             if not captcha_text:
-                self._send_status("❌ OCR failed", screenshot=True, page=page)
-                self._human_like_delay(2, 4)
+                self._send_status("❌ OCR failed or returned None", screenshot=True, page=page)
+                
+                # ✅ تحديث الكابتشا إذا فشل OCR
+                try:
+                    refresh_btn = page.locator('input[id*="refreshcaptcha"], a[id*="refreshcaptcha"], button[id*="refreshcaptcha"], img[id*="refreshcaptcha"]')
+                    if refresh_btn.count() > 0 and refresh_btn.is_visible():
+                        self._send_status("🔄 Refreshing captcha...")
+                        refresh_btn.click()
+                        self._human_like_delay(3, 5)
+                    else:
+                        self._human_like_delay(2, 4)
+                except Exception as e:
+                    logger.error(f"Refresh failed: {e}")
+                    self._human_like_delay(2, 4)
                 continue
 
+            # ✅ ملء الحقل
             try:
+                self._send_status(f"✍️ Filling captcha: '{captcha_text}'")
                 page.fill(input_selector, captcha_text)
                 self._human_like_delay(0.5, 1.5)
+                
+                # ✅ التقاط صورة قبل الإرسال
+                self._send_status("📸 Before submit", screenshot=True, page=page)
+                
+                # ✅ الضغط على زر الإرسال
                 page.click(submit_selector)
-                self._human_like_delay(2, 4)
+                self._send_status("📤 Submitted", screenshot=True, page=page)
+                self._human_like_delay(3, 5)
+                
             except Exception as e:
-                self._send_status(f"❌ Error submitting: {e}", screenshot=True, page=page)
+                self._send_status(f"❌ Error filling/submitting: {e}", screenshot=True, page=page)
                 continue
 
-            page_content = page.content()
-            if "Please enter here the text you see in the picture above" not in page_content:
-                self._send_status(f"✅ Captcha solved! Entered: '{captcha_text}'", screenshot=True, page=page)
-                return True
-            else:
-                self._send_status(f"❌ Wrong captcha: '{captcha_text}', retrying...", screenshot=True, page=page)
+            # ✅ التحقق من النجاح
+            try:
+                page_content = page.content()
+                if "Please enter here the text you see in the picture above" not in page_content:
+                    self._send_status(f"✅ Captcha accepted!", screenshot=True, page=page)
+                    return True
+                else:
+                    self._send_status(f"❌ Wrong captcha, retrying...", screenshot=True, page=page)
+            except Exception as e:
+                logger.error(f"Error checking result: {e}")
 
-        self._send_status("🚨 All captcha attempts failed", screenshot=True, page=page)
+        self._send_status("🚨 All attempts failed", screenshot=True, page=page)
         return False
 
     def run(self) -> bool:
@@ -77,28 +107,18 @@ class SniperEngine:
                 )
                 
                 context = browser.new_context(
-                    viewport={'width': self.config.VIEWPORT_WIDTH, 'height': self.config.VIEWPORT_HEIGHT},
+                    viewport={'width': 1920, 'height': 1080},
                     user_agent=self.config.USER_AGENT
                 )
                 page = context.new_page()
                 
-                # ✅ إصلاح: wait_until='load' بدلاً من 'networkidle'
-                self._send_status(f"🌐 Opening: {self.config.TARGET_URL[:60]}...")
-                try:
-                    page.goto(self.config.TARGET_URL, timeout=120000, wait_until='load')
-                    self._send_status("✅ Page loaded", screenshot=True, page=page)
-                except Exception as e:
-                    self._send_status(f"❌ Failed to load: {str(e)[:100]}")
-                    # ✅ محاولة ثانية بدون screenshot
-                    try:
-                        page.goto(self.config.TARGET_URL, timeout=60000, wait_until='domcontentloaded')
-                        self._send_status("✅ Page loaded (fallback)", screenshot=True, page=page)
-                    except:
-                        return False
+                # فتح الموقع
+                self._send_status(f"🌐 Opening site...")
+                page.goto(self.config.TARGET_URL, timeout=120000, wait_until='load')
+                self._human_like_delay(5, 8)
+                self._send_status("✅ Page loaded", screenshot=True, page=page)
 
-                self._human_like_delay(5, 8)  # ✅ انتظار أطول
-
-                # كابتشا أولى
+                # ✅ الخطوة 1: كابتشا أولى
                 if not self._solve_and_submit_captcha(
                     page, 
                     'img[src*="captcha"]', 
@@ -108,18 +128,15 @@ class SniperEngine:
                 ):
                     return False
 
-                # باقي الخطوات...
-                self._send_status("🔍 Checking availability...", screenshot=True, page=page)
+                # ✅ التحقق من النتيجة
+                self._send_status("🔍 Checking result...", screenshot=True, page=page)
                 
                 if "Unfortunately, there are no appointments available" in page.content():
-                    self._send_status("📭 No appointments available", screenshot=True, page=page)
+                    self._send_status("📭 No appointments", screenshot=True, page=page)
                     return False
 
-                self._send_status("🎯 Appointments might be available!", screenshot=True, page=page)
-
-                # ... (باقي الكود كما هو)
-
-                return False  # مؤقتاً حتى نختبر الموقع
+                self._send_status("🎯 Success! Continuing...", screenshot=True, page=page)
+                return True  # مؤقتاً للاختبار
 
             except Exception as e:
                 self._send_status(f"💥 ERROR: {str(e)[:200]}")
@@ -129,8 +146,3 @@ class SniperEngine:
                 if browser:
                     browser.close()
                     self._send_status("🔒 Browser closed")
-
-if __name__ == "__main__":
-    sniper = SniperEngine()
-    result = sniper.run()
-    print(f"Result: {'SUCCESS' if result else 'FAILED'}")
